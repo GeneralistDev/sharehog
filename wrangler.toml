@@ -1,0 +1,8 @@
+name = "sharehog"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sharehog-db"
+database_id = "d39f7592-2697-459b-868c-70548e568ad8"
