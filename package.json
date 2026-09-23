@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "wrangler": "^3.90.0"
+  },
+  "dependencies": {
+    "posthog-node": "^5.52.5"
   }
 }

@@ -1,3 +1,5 @@
+import { getPostHog } from "./posthog.js";
+
 const SESSION_DAYS = 30;
 
 // ---------- helpers ----------
@@ -85,15 +87,33 @@ function htmlResponse(body, status = 200) {
   return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
+async function captureEvent(env, distinctId, event, properties = {}) {
+  const posthog = getPostHog(env);
+  if (!posthog) return;
+  posthog.capture({ distinctId, event, properties });
+  await posthog.flush();
+}
+
 // ---------- layout ----------
 
-function layout({ title, user, body, error, wide }) {
+function posthogSnippet(env) {
+  const apiKey = env.POSTHOG_API_KEY;
+  const host = env.POSTHOG_HOST;
+  if (!apiKey || !host) return "";
+  return `<script>
+    !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init me ws ys ps bs capture je Di ks register register_once register_for_session unregister unregister_for_session Ps getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty Es Rs createPersonProfile Is opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug Fs getPageViewId captureTraceFeedback captureTraceMetric".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+    posthog.init(${JSON.stringify(apiKey)},{api_host:${JSON.stringify(host)},person_profiles:"identified_only",capture_exceptions:true})
+  </script>`;
+}
+
+function layout({ title, user, body, error, wide, env }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · ShareHog</title>
+${env ? posthogSnippet(env) : ""}
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -268,10 +288,10 @@ async function handleFeed(request, env, user) {
         .map((l) => listingCard(l, user))
         .join("\n")}</div>`
     : `<h1 class="page-title">what people are vibe coding</h1><div class="empty">no listings yet — <a href="/new">be the first to share</a></div>`;
-  return htmlResponse(layout({ title: "Listings", user, body, wide: true }));
+  return htmlResponse(layout({ title: "Listings", user, body, wide: true, env }));
 }
 
-function registerForm(error) {
+function registerForm(env, error) {
   const body = `<div class="auth-card">
     <h1>create an account</h1>
     <p class="sub">pick a username and password for the workshop</p>
@@ -282,10 +302,10 @@ function registerForm(error) {
     </form>
     <div class="switch">already have an account? <a href="/login">log in</a></div>
   </div>`;
-  return layout({ title: "Sign up", user: null, body, error });
+  return layout({ title: "Sign up", user: null, body, error, env });
 }
 
-function loginForm(error) {
+function loginForm(env, error) {
   const body = `<div class="auth-card">
     <h1>welcome back</h1>
     <p class="sub">log in to share and browse listings</p>
@@ -296,7 +316,7 @@ function loginForm(error) {
     </form>
     <div class="switch">new here? <a href="/register">sign up</a></div>
   </div>`;
-  return layout({ title: "Log in", user: null, body, error });
+  return layout({ title: "Log in", user: null, body, error, env });
 }
 
 async function router(request, env) {
@@ -311,7 +331,7 @@ async function router(request, env) {
 
   if (pathname === "/register" && request.method === "GET") {
     if (user) return redirect("/");
-    return htmlResponse(registerForm());
+    return htmlResponse(registerForm(env));
   }
 
   if (pathname === "/register" && request.method === "POST") {
@@ -319,11 +339,11 @@ async function router(request, env) {
     const username = (form.get("username") || "").toString().trim();
     const password = (form.get("password") || "").toString();
     if (!username || password.length < 4) {
-      return htmlResponse(registerForm("username required, password needs 4+ characters"), 400);
+      return htmlResponse(registerForm(env, "username required, password needs 4+ characters"), 400);
     }
     const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
     if (existing) {
-      return htmlResponse(registerForm("that username is taken"), 400);
+      return htmlResponse(registerForm(env, "that username is taken"), 400);
     }
     const { salt, hash } = await hashPassword(password);
     const result = await env.DB.prepare(
@@ -335,29 +355,41 @@ async function router(request, env) {
     await env.DB.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
       .bind(sid, userId, expiresAt)
       .run();
+    const posthog = getPostHog(env);
+    if (posthog) {
+      posthog.identify({ distinctId: String(userId), properties: { username } });
+      posthog.capture({ distinctId: String(userId), event: "user_registered" });
+      await posthog.flush();
+    }
     return redirect("/", { "Set-Cookie": setCookieHeader(request, sid, SESSION_DAYS * 86400) });
   }
 
   if (pathname === "/login" && request.method === "GET") {
     if (user) return redirect("/");
-    return htmlResponse(loginForm());
+    return htmlResponse(loginForm(env));
   }
 
   if (pathname === "/login" && request.method === "POST") {
     const form = await request.formData();
     const username = (form.get("username") || "").toString().trim();
     const password = (form.get("password") || "").toString();
-    const row = await env.DB.prepare("SELECT id, salt, password_hash FROM users WHERE username = ?")
+    const row = await env.DB.prepare("SELECT id, username, salt, password_hash FROM users WHERE username = ?")
       .bind(username)
       .first();
     if (!row || !(await verifyPassword(password, row.salt, row.password_hash))) {
-      return htmlResponse(loginForm("wrong username or password"), 400);
+      return htmlResponse(loginForm(env, "wrong username or password"), 400);
     }
     const sid = newSessionId();
     const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400 * 1000).toISOString();
     await env.DB.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
       .bind(sid, row.id, expiresAt)
       .run();
+    const posthog = getPostHog(env);
+    if (posthog) {
+      posthog.identify({ distinctId: String(row.id), properties: { username: row.username } });
+      posthog.capture({ distinctId: String(row.id), event: "user_logged_in" });
+      await posthog.flush();
+    }
     return redirect("/", { "Set-Cookie": setCookieHeader(request, sid, SESSION_DAYS * 86400) });
   }
 
@@ -366,12 +398,13 @@ async function router(request, env) {
     if (cookies.sid) {
       await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(cookies.sid).run();
     }
+    if (user) await captureEvent(env, String(user.id), "user_logged_out");
     return redirect("/login", { "Set-Cookie": setCookieHeader(request, "", 0) });
   }
 
   if (pathname === "/new" && request.method === "GET") {
     if (!user) return redirect("/login");
-    return htmlResponse(layout({ title: "New listing", user, body: newListingFormBody() }));
+    return htmlResponse(layout({ title: "New listing", user, body: newListingFormBody(), env }));
   }
 
   if (pathname === "/new" && request.method === "POST") {
@@ -383,15 +416,23 @@ async function router(request, env) {
     const description = (form.get("description") || "").toString().trim();
     if (!listingUrl) {
       return htmlResponse(
-        layout({ title: "New listing", user, body: newListingFormBody(), error: "url is required" }),
+        layout({ title: "New listing", user, body: newListingFormBody(), error: "url is required", env }),
         400
       );
+    }
+    if (title.includes("!")) {
+      throw new Error("Unexpected character in listing title");
     }
     await env.DB.prepare(
       "INSERT INTO listings (user_id, url, title, description, image_url) VALUES (?, ?, ?, ?, ?)"
     )
       .bind(user.id, listingUrl, title || null, description || null, imageUrl || null)
       .run();
+    await captureEvent(env, String(user.id), "listing_created", {
+      has_title: Boolean(title),
+      has_image: Boolean(imageUrl),
+      has_description: Boolean(description),
+    });
     return redirect("/");
   }
 
@@ -401,7 +442,7 @@ async function router(request, env) {
     const listing = await env.DB.prepare("SELECT * FROM listings WHERE id = ? AND user_id = ?")
       .bind(id, user.id)
       .first();
-    if (!listing) return htmlResponse(layout({ title: "Not found", user, body: `<p>listing not found</p>` }), 404);
+    if (!listing) return htmlResponse(layout({ title: "Not found", user, body: `<p>listing not found</p>`, env }), 404);
     const body = listingFormBody({
       action: `/listings/${id}/edit`,
       heading: "edit your listing",
@@ -409,7 +450,7 @@ async function router(request, env) {
       submitLabel: "save changes",
       values: listing,
     });
-    return htmlResponse(layout({ title: "Edit listing", user, body }));
+    return htmlResponse(layout({ title: "Edit listing", user, body, env }));
   }
 
   if (pathname.startsWith("/listings/") && pathname.endsWith("/edit") && request.method === "POST") {
@@ -418,7 +459,7 @@ async function router(request, env) {
     const existing = await env.DB.prepare("SELECT id FROM listings WHERE id = ? AND user_id = ?")
       .bind(id, user.id)
       .first();
-    if (!existing) return htmlResponse(layout({ title: "Not found", user, body: `<p>listing not found</p>` }), 404);
+    if (!existing) return htmlResponse(layout({ title: "Not found", user, body: `<p>listing not found</p>`, env }), 404);
     const form = await request.formData();
     const listingUrl = (form.get("url") || "").toString().trim();
     const title = (form.get("title") || "").toString().trim();
@@ -432,13 +473,18 @@ async function router(request, env) {
         submitLabel: "save changes",
         values: { url: listingUrl, title, image_url: imageUrl, description },
       });
-      return htmlResponse(layout({ title: "Edit listing", user, body, error: "url is required" }), 400);
+      return htmlResponse(layout({ title: "Edit listing", user, body, error: "url is required", env }), 400);
     }
     await env.DB.prepare(
       "UPDATE listings SET url = ?, title = ?, description = ?, image_url = ? WHERE id = ? AND user_id = ?"
     )
       .bind(listingUrl, title || null, description || null, imageUrl || null, id, user.id)
       .run();
+    await captureEvent(env, String(user.id), "listing_updated", {
+      has_title: Boolean(title),
+      has_image: Boolean(imageUrl),
+      has_description: Boolean(description),
+    });
     return redirect("/");
   }
 
@@ -446,10 +492,11 @@ async function router(request, env) {
     if (!user) return redirect("/login");
     const id = pathname.split("/")[2];
     await env.DB.prepare("DELETE FROM listings WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+    await captureEvent(env, String(user.id), "listing_deleted");
     return redirect("/");
   }
 
-  return htmlResponse(layout({ title: "Not found", user, body: `<p>page not found</p>` }), 404);
+  return htmlResponse(layout({ title: "Not found", user, body: `<p>page not found</p>`, env }), 404);
 }
 
 function listingFormBody({ action, heading, sub, submitLabel, values = {} }) {
@@ -478,9 +525,15 @@ function newListingFormBody() {
 
 export default {
   async fetch(request, env) {
+    const posthog = getPostHog(env);
+
     try {
       return await router(request, env);
     } catch (err) {
+      if (posthog) {
+        posthog.captureException(err);
+        await posthog.flush();
+      }
       return new Response("Internal error: " + err.message, { status: 500 });
     }
   },
