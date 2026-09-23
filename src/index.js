@@ -263,10 +263,14 @@ function listingCard(listing, currentUser) {
          </form>
        </div>`
     : "";
+  const clickPayload = escapeHtml(
+    JSON.stringify({ listing_id: listing.id, url: listing.url, title: listing.title || null })
+  );
+  const trackClick = `onclick="window.posthog && window.posthog.capture('listing_clicked', ${clickPayload})"`;
   return `<div class="card">
-    <a href="${escapeHtml(listing.url)}" target="_blank" rel="noopener noreferrer">${thumb}</a>
+    <a href="${escapeHtml(listing.url)}" target="_blank" rel="noopener noreferrer" ${trackClick}>${thumb}</a>
     <div class="body">
-      <h3><a href="${escapeHtml(listing.url)}" target="_blank" rel="noopener noreferrer">${title}</a></h3>
+      <h3><a href="${escapeHtml(listing.url)}" target="_blank" rel="noopener noreferrer" ${trackClick}>${title}</a></h3>
       <div class="url">${escapeHtml(listing.url)}</div>
       ${desc}
       <div class="foot">
