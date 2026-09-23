@@ -419,13 +419,8 @@ async function router(request, env) {
     const imageUrl = (form.get("image_url") || "").toString().trim();
     const description = (form.get("description") || "").toString().trim();
     if (!listingUrl) {
-      return htmlResponse(
-        layout({ title: "New listing", user, body: newListingFormBody(), error: "url is required", env }),
-        400
-      );
-    }
-    if (title.includes("!")) {
-      throw new Error("Unexpected character in listing title");
+      const body = newListingFormBody({ url: listingUrl, title, image_url: imageUrl, description });
+      return htmlResponse(layout({ title: "New listing", user, body, error: "url is required", env }), 400);
     }
     await env.DB.prepare(
       "INSERT INTO listings (user_id, url, title, description, image_url) VALUES (?, ?, ?, ?, ?)"
@@ -518,12 +513,13 @@ function listingFormBody({ action, heading, sub, submitLabel, values = {} }) {
   </div>`;
 }
 
-function newListingFormBody() {
+function newListingFormBody(values = {}) {
   return listingFormBody({
     action: "/new",
     heading: "share your site",
     sub: "only the url is required",
     submitLabel: "share it",
+    values,
   });
 }
 
